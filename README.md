@@ -25,6 +25,25 @@ npm run deploy     # or: npm run dev:cf
 `index.js` serves them via that binding on Workers, falling back to `./public`
 on disk under Node. No `fs`/`__dirname` at module top level → runs on Workers.
 
+## Deploy (Docker)
+
+A production `Dockerfile` (multi-stage, non-root `node` user, healthcheck,
+`npm ci --omit=dev`) is included. Build and run:
+
+```bash
+docker build -t decryptor .
+docker run -d --name decryptor -p 3030:3030 decryptor
+```
+
+Or with Compose (respects a `PORT` env var, auto-restarts, healthchecked):
+
+```bash
+PORT=3030 docker compose up -d --build
+```
+
+The container listens on `3030` and exposes `GET /health` for the healthcheck.
+Set `PORT` to change the internal port (update the published port accordingly).
+
 ## Routes
 
 - `POST /api/extract` — body `{ "url": "<embed>" }` → `{ m3u8, referer, host, finalUrl, proxyUrl }`.
