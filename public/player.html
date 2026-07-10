@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Decryptor — HLS Player</title>
+    <script src="/hls.min.js"></script>
+    <style>
+      :root { color-scheme: dark; }
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #0e0e11; color: #eee; }
+      header { padding: 1rem 1.25rem; background: #15151b; border-bottom: 1px solid #26262e; }
+      h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
+      .hint { color: #9a9aa6; font-size: .8rem; }
+      main { padding: 1.25rem; max-width: 960px; margin: 0 auto; }
+      .row { display: flex; gap: .5rem; flex-wrap: wrap; }
+      input { flex: 1 1 60%; min-width: 260px; padding: .6rem; background: #1b1b22; border: 1px solid #2c2c36; color: #eee; border-radius: 8px; }
+      button { padding: .6rem 1rem; border: 0; border-radius: 8px; background: #5b6cff; color: #fff; cursor: pointer; }
+      button.sec { background: #2c2c36; }
+      video { width: 100%; margin-top: 1rem; background: #000; border-radius: 10px; aspect-ratio: 16/9; }
+      .vwrap { position: relative; margin-top: 1rem; }
+      .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        background: rgba(0,0,0,.45); color: #fff; font-size: 1.1rem; cursor: pointer; border-radius: 10px; }
+      .overlay.hidden { display: none; }
+      pre { background: #15151b; padding: 1rem; border-radius: 8px; overflow: auto; max-height: 12rem; margin-top: 1rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Decryptor — HLS Player (hls.js)</h1>
+      <div class="hint">
+        Paste a direct <code>.m3u8</code> (or our <code>/proxy?...</code>) URL, OR an
+        embed URL (vidhideplus / turbovidhls / lulustream / vidara).
+      </div>
+    </header>
+    <main>
+      <div class="row">
+        <input id="url" placeholder="https://.../master.m3u8  or  https://vidhideplus.com/v/..." />
+        <button id="play">Load &amp; Play</button>
+        <button id="clear" class="sec">Clear</button>
+      </div>
+      <div class="vwrap">
+        <video id="video" controls></video>
+        <div id="overlay" class="overlay hidden">▶ Click to play</div>
+      </div>
+      <pre id="log">idle…</pre>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const log = (m) => { $('log').textContent = String(m); };
+      const video = $('video');
+      const overlay = $('overlay');
+      let hls = null;
+
+      function showOverlay(msg) {
+        overlay.textContent = msg || '▶ Click to play';
+        overlay.classList.remove('hidden');
+      }
+      function hideOverlay() { overlay.classList.add('hidden'); }
+
+      overlay.onclick = () => {
+        video.muted = true;
+        video.play().then(hideOverlay).catch(() => showOverlay('▶ Click to play'));
+      };
+      video.addEventListener('playing', hideOverlay);
+      video.addEventListener('play', hideOverlay);
+
+      function destroy() {
+        if (hls) { hls.destroy(); hls = null; }
+        video.pause(); video.removeAttribute('src'); video.load();
+        hideOverlay();
+      }
+
+      function play(src) {
+        destroy();
+        if (!window.Hls) {
+          log('ERROR: hls.min.js failed to load (check /hls.min.js is served).');
+          return;
+        }
+        const onReady = () => {
+          log('manifest ready — starting playback (muted)…');
+          video.muted = true; // muted autoplay is usually allowed
+          video.play().catch((e) => {
+            if (e.name === 'AbortError') return; // benign interrupt
+            // Autoplay blocked without a user gesture (e.g. one-click links).
+            showOverlay('▶ Click to play');
+            log('autoplay blocked (' + e.name + '): click the video to start');
+          });
+        };
+
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src; // Safari native
+          video.addEventListener('loadedmetadata', onReady, { once: true });
+        } else if (Hls.isSupported()) {
+          // Buffer further ahead so a slow CDN (e.g. lulustream's cdn-tnmr.org,
+          // ~2-4s TTFB from this server) doesn't drain the buffer mid-play.
+          hls = new Hls({
+            enableWorker: true,
+            maxBufferLength: 60,
+            maxMaxBufferLength: 120,
+            backBufferLength: 30,
+            fragLoadingMaxRetry: 6,
+            fragLoadingRetryDelay: 1000,
+            manifestLoadingMaxRetry: 4,
+            capLevelToPlayerSize: false,
+          });
+          hls.loadSource(src);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, onReady);
+          hls.on(Hls.Events.LEVEL_LOADED, () => log('level loaded — buffering…'));
+          hls.on(Hls.Events.FRAG_BUFFERED, () => log('first segment buffered — playing.'));
+          hls.on(Hls.Events.ERROR, (_e, d) => {
+            if (d.fatal) log('hls FATAL error: ' + d.type + ' / ' + d.details + (d.response ? ' (HTTP ' + d.response.code + ')' : ''));
+            else log('hls warn: ' + d.details);
+          });
+        } else {
+          log('HLS not supported in this browser');
+        }
+      }
+
+      async function load(raw) {
+        raw = (raw || '').trim();
+        if (!raw) return;
+        $('url').value = raw;
+        log('resolving ' + raw);
+        try {
+          // If it looks like an embed host, ask our extractor for a proxy URL.
+          const isEmbed = /vidhideplus|callistanise|lulustream|luluvdo|vidara|turbovidhls/.test(raw);
+          let src = raw;
+          if (isEmbed) {
+            const res = await fetch('/api/extract', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ url: raw }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'extract failed');
+            src = data.proxyUrl;
+            log('extracted → ' + src);
+          } else {
+            log('loading m3u8 directly → ' + src);
+          }
+          play(src);
+        } catch (err) {
+          log('error: ' + err.message);
+        }
+      }
+
+      $('play').onclick = () => load($('url').value);
+
+      // Auto-play if ?url=<embed or m3u8/proxy> is present (one-click links).
+      const initial = new URLSearchParams(location.search).get('url');
+      if (initial) load(initial);
+
+      $('clear').onclick = () => { destroy(); $('url').value = ''; log('idle…'); };
+    </script>
+  </body>
+</html>

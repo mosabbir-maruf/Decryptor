@@ -1,0 +1,12 @@
+name = "decryptor"
+main = "index.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Serve the player pages + vendored hls.min.js as static assets.
+# The Worker fetches them via the ASSETS binding (see index.js).
+assets = { directory = "./public", binding = "ASSETS" }
+
+# Outbound fetches to the CDNs happen inside the Worker (proxy/extract).
+# No URL allowlist needed for arbitrary hosts.
+# routes = [{ pattern = "decrypt.example.com", custom_domain = true }]
