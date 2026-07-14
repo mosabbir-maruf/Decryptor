@@ -9,6 +9,9 @@ Test embed URLs for the live hosts this backend supports (used to verify
 | SR5 | turbovidhls.com    | Turbo      | https://turbovidhls.com/t/6a4a46e35d313  | ✅ works (local + CF) |
 | SR7 | lulustream.com     | Lulustream | https://lulustream.com/e/75n0j12zgsl3    | ✅ works (local + CF) |
 | SR9 | vidara.to          | Vidara     | https://vidara.to/e/QWE1VSu9mQH0         | ✅ works (local + CF) |
+|  —  | themoviedb.org     | PRO Multi  | https://www.themoviedb.org/movie/533535  | ✅ works (local + CF) |
+
+Plain TMDB IDs (e.g. `533535`) also work — they auto-expand to the full movie URL.
 
 Other servers (Filemoon, Streamwish, Vidstream, Strmup, Seekstream)
 are **not supported** by this build.

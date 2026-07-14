@@ -39,7 +39,7 @@ app.post('/api/extract', async (c) => {
 app.get('/proxy', async (c) => {
   const target = c.req.query('url');
   const referer = c.req.query('referer') || '';
-  const range = c.req.header('range') || undefined;
+  const range = c.req.header('range');
 
   if (!target) {
     return c.json({ error: 'missing "url" query param' }, 400);
@@ -49,8 +49,9 @@ app.get('/proxy', async (c) => {
     // De-prefix targets must be read whole (to strip the fake header), so we
     // never forward the client's Range for them — fetch the full object.
     const deprefix = needsDeprefix(target);
+    const useReferer = referer && !deprefix;
     const { res, status, contentType, contentLength, contentRange, acceptRanges } =
-      await fetchThrough(target, referer, { range: deprefix ? undefined : range });
+      await fetchThrough(target, referer, { range: deprefix ? undefined : range, useReferer });
 
     // Playlist: rewrite embedded URLs so the player keeps hitting our proxy.
     // Classified by URL/content-type — no body read, so segments stay streamed.

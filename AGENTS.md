@@ -16,10 +16,10 @@ proxies the HLS (playlist + segments) through the server with the correct
   `fs`/`__dirname` at top level → runs on Workers. `hls.min.js` is vendored.
 
 ## Routes
-- `POST /api/extract` — `{ "url": "<embed>" }` → `{ m3u8, referer, host, finalUrl, proxyUrl }`.
+- `POST /api/extract` — `{ "url": "<embed|tmdb>" }` → `{ m3u8, referer, host, finalUrl, proxyUrl }`.
 - `GET /proxy?url=<enc target>&referer=<enc origin>` — fetches target with the
   player's origin as `Referer`, rewrites playlists through `/proxy`, streams segments.
-- `GET /` `/player` — single hls.js player page (`?url=<embed|m3u8>` auto-play).
+- `GET /` `/player` — single hls.js player page (`?url=<embed|m3u8|tmdb>` auto-play).
 - `GET /health`, `/<file>` — static asset.
 
 ## Proxy behavior (don't regress)
@@ -39,7 +39,8 @@ proxies the HLS (playlist + segments) through the server with the correct
   - `vidhide.js`, `lulustream.js` — wrappers delegating to `generic.js`.
   - `vidara.js` — `POST /api/stream`.
   - `generic.js` — packed-JS extractor for Turbo (SR5).
-  - Working hosts: **Vidhide (SR2), Turbo (SR5), Lulustream (SR7), Vidara (SR9)**.
+  - `vixsrc.js` — PRO Multi extractor supporting direct TMDB URLs (`themoviedb.org/movie|tv/{id}`).
+  - Working hosts: **Vidhide (SR2), Turbo (SR5), Lulustream (SR7), Vidara (SR9), Vixsrc/PRO Multi (TMDB)**.
 
 ## Conventions
 - ESM only, no build step. Deps: `hono` + `@hono/node-server`. No secrets.

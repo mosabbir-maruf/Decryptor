@@ -115,8 +115,10 @@ export function stripFakePrefix(buf) {
 }
 
 // Fetch the target and return { body, contentType, status, headers }.
-export async function fetchThrough(target, referer, { range, origin } = {}) {
-  const useReferer = referer && !shouldDropReferer(target);
+export async function fetchThrough(target, referer, { range, origin, useReferer } = {}) {
+  if (useReferer === undefined) {
+    useReferer = referer && !shouldDropReferer(target);
+  }
   const headers = {
     'User-Agent': UA,
     Accept: '*/*',

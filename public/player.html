@@ -21,6 +21,9 @@
       .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
         background: rgba(0,0,0,.45); color: #fff; font-size: 1.1rem; cursor: pointer; border-radius: 10px; }
       .overlay.hidden { display: none; }
+      .ctrls { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: .6rem; }
+      .ctrls label { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: #9a9aa6; }
+      .ctrls select { padding: .45rem .6rem; background: #1b1b22; border: 1px solid #2c2c36; color: #eee; border-radius: 8px; }
       pre { background: #15151b; padding: 1rem; border-radius: 8px; overflow: auto; max-height: 12rem; margin-top: 1rem; }
     </style>
   </head>
@@ -28,8 +31,8 @@
     <header>
       <h1>Decryptor — HLS Player (hls.js)</h1>
       <div class="hint">
-        Paste a direct <code>.m3u8</code> (or our <code>/proxy?...</code>) URL, OR an
-        embed URL (vidhideplus / turbovidhls / lulustream / vidara).
+        Paste a direct <code>.m3u8</code> (or our <code>/proxy?...</code>) URL, or an
+        embed/TMDB URL (vidhideplus / turbovidhls / lulustream / vidara / themoviedb.org).
       </div>
     </header>
     <main>
@@ -40,27 +43,35 @@
       </div>
       <div class="vwrap">
         <video id="video" controls></video>
-        <div id="overlay" class="overlay hidden">▶ Click to play</div>
+        <div id="overlay" class="overlay hidden">Click to play</div>
+      </div>
+      <div class="ctrls">
+        <label>Quality <select id="quality"><option value="-1">Auto</option></select></label>
+        <label>Audio <select id="audio"><option value="-1">Default</option></select></label>
+        <label>Subtitles <select id="subs"><option value="-1">Off</option></select></label>
       </div>
       <pre id="log">idle…</pre>
     </main>
 
     <script>
       const $ = (id) => document.getElementById(id);
-      const log = (m) => { $('log').textContent = String(m); };
+      const $log = $('log'), $url = $('url'), $playBtn = $('play'), $clearBtn = $('clear');
+      const $quality = $('quality'), $subs = $('subs'), $audio = $('audio');
+      const log = (m) => { console.log('[player]', m); $log.textContent += '\n' + String(m); };
       const video = $('video');
       const overlay = $('overlay');
+      const isEmbed = /vidhideplus|callistanise|lulustream|luluvdo|vidara|turbovidhls|themoviedb\.org/;
       let hls = null;
 
       function showOverlay(msg) {
-        overlay.textContent = msg || '▶ Click to play';
+        overlay.textContent = msg || 'Click to play';
         overlay.classList.remove('hidden');
       }
       function hideOverlay() { overlay.classList.add('hidden'); }
 
       overlay.onclick = () => {
         video.muted = true;
-        video.play().then(hideOverlay).catch(() => showOverlay('▶ Click to play'));
+        video.play().then(hideOverlay).catch(() => showOverlay('Click to play'));
       };
       video.addEventListener('playing', hideOverlay);
       video.addEventListener('play', hideOverlay);
@@ -69,7 +80,37 @@
         if (hls) { hls.destroy(); hls = null; }
         video.pause(); video.removeAttribute('src'); video.load();
         hideOverlay();
+        $quality.innerHTML = '<option value="-1">Auto</option>';
+        $audio.innerHTML = '<option value="-1">Default</option>';
+        $subs.innerHTML = '<option value="-1">Off</option>';
       }
+
+      // Build the Quality / Audio / Subtitle <select>s from the parsed manifest.
+      function populateControls(data) {
+        const qOpts = ['<option value="-1">Auto</option>'];
+        data.levels.forEach((lvl, i) => {
+          const label = lvl.height ? lvl.height + 'p' : Math.round((lvl.bitrate || 0) / 1000) + 'k';
+          qOpts.push(`<option value="${i}">${label}</option>`);
+        });
+        $quality.innerHTML = qOpts.join('');
+        $quality.value = String(hls.autoLevelEnabled ? -1 : hls.currentLevel);
+
+        const aOpts = ['<option value="-1">Default</option>'];
+        data.audioTracks.forEach((t, i) => {
+          aOpts.push(`<option value="${i}">${t.name || t.lang || 'Track ' + (i + 1)}</option>`);
+        });
+        $audio.innerHTML = aOpts.join('');
+
+        const sOpts = ['<option value="-1">Off</option>'];
+        (hls.subtitleTracks || []).forEach((t, i) => {
+          sOpts.push(`<option value="${i}">${t.name || t.lang || 'Track ' + (i + 1)}</option>`);
+        });
+        $subs.innerHTML = sOpts.join('');
+      }
+
+      $quality.onchange = () => { if (hls) hls.currentLevel = parseInt($quality.value, 10); };
+      $audio.onchange = () => { if (hls) hls.audioTrack = parseInt($audio.value, 10); };
+      $subs.onchange = () => { if (hls) { hls.subtitleTrack = parseInt($subs.value, 10); hls.subtitleDisplay = $subs.value !== '-1'; } };
 
       function play(src) {
         destroy();
@@ -77,42 +118,50 @@
           log('ERROR: hls.min.js failed to load (check /hls.min.js is served).');
           return;
         }
+        log('hls.js v' + (Hls.version || '?'));
         const onReady = () => {
           log('manifest ready — starting playback (muted)…');
           video.muted = true; // muted autoplay is usually allowed
           video.play().catch((e) => {
-            if (e.name === 'AbortError') return; // benign interrupt
-            // Autoplay blocked without a user gesture (e.g. one-click links).
-            showOverlay('▶ Click to play');
-            log('autoplay blocked (' + e.name + '): click the video to start');
+            showOverlay('Click to play');
+            log('playback blocked (' + e.name + '): click the video');
           });
         };
 
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = src; // Safari native
+        if (Hls.isSupported()) {
+            hls = new Hls({
+              enableWorker: false,
+              maxBufferLength: 30,
+              maxMaxBufferLength: 60,
+              backBufferLength: 15,
+              startLevel: 0,
+            });
+            hls.on(Hls.Events.MANIFEST_PARSED, (_ev, data) => {
+              log('manifest parsed (' + (data.levels?.length || 0) + ' levels, ' + (data.audioTracks?.length || 0) + ' audio)');
+              populateControls(data);
+              const eng = data.audioTracks?.findIndex(t => (t.lang || '').startsWith('eng') || (t.name || '').includes('English'));
+              if (eng >= 0) {
+                setTimeout(() => {
+                  hls.audioTrack = eng;
+                  $audio.value = String(eng);
+                }, 100);
+              }
+              onReady();
+            });
+            hls.on(Hls.Events.ERROR, (_e, d) => {
+              const msg = d.type + ' / ' + d.details + (d.response ? ' (HTTP ' + d.response.code + ')' : '');
+              if (d.fatal) { log('FATAL: ' + msg); }
+              else log('warn: ' + msg);
+            });
+            hls.on(Hls.Events.LEVEL_SWITCHED, (_ev, d) => {
+              $quality.value = String(hls.autoLevelEnabled ? -1 : d.level);
+            });
+            hls.attachMedia(video);
+            hls.loadSource(src);
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          log('falling back to native HLS (Safari/iOS)');
+          video.src = src;
           video.addEventListener('loadedmetadata', onReady, { once: true });
-        } else if (Hls.isSupported()) {
-          // Buffer further ahead so a slow CDN (e.g. lulustream's cdn-tnmr.org,
-          // ~2-4s TTFB from this server) doesn't drain the buffer mid-play.
-          hls = new Hls({
-            enableWorker: true,
-            maxBufferLength: 60,
-            maxMaxBufferLength: 120,
-            backBufferLength: 30,
-            fragLoadingMaxRetry: 6,
-            fragLoadingRetryDelay: 1000,
-            manifestLoadingMaxRetry: 4,
-            capLevelToPlayerSize: false,
-          });
-          hls.loadSource(src);
-          hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, onReady);
-          hls.on(Hls.Events.LEVEL_LOADED, () => log('level loaded — buffering…'));
-          hls.on(Hls.Events.FRAG_BUFFERED, () => log('first segment buffered — playing.'));
-          hls.on(Hls.Events.ERROR, (_e, d) => {
-            if (d.fatal) log('hls FATAL error: ' + d.type + ' / ' + d.details + (d.response ? ' (HTTP ' + d.response.code + ')' : ''));
-            else log('hls warn: ' + d.details);
-          });
         } else {
           log('HLS not supported in this browser');
         }
@@ -121,13 +170,18 @@
       async function load(raw) {
         raw = (raw || '').trim();
         if (!raw) return;
-        $('url').value = raw;
+        $url.value = raw;
+        $log.textContent = '';
         log('resolving ' + raw);
         try {
-          // If it looks like an embed host, ask our extractor for a proxy URL.
-          const isEmbed = /vidhideplus|callistanise|lulustream|luluvdo|vidara|turbovidhls/.test(raw);
+          // Plain numeric ID → treat as TMDB movie
+          if (/^\d+$/.test(raw)) {
+            raw = 'https://www.themoviedb.org/movie/' + raw;
+            $url.value = raw;
+          }
+          const embed = isEmbed.test(raw);
           let src = raw;
-          if (isEmbed) {
+          if (embed) {
             const res = await fetch('/api/extract', {
               method: 'POST', headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ url: raw }),
@@ -145,13 +199,13 @@
         }
       }
 
-      $('play').onclick = () => load($('url').value);
+      $playBtn.onclick = () => load($url.value);
 
       // Auto-play if ?url=<embed or m3u8/proxy> is present (one-click links).
       const initial = new URLSearchParams(location.search).get('url');
       if (initial) load(initial);
 
-      $('clear').onclick = () => { destroy(); $('url').value = ''; log('idle…'); };
+      $clearBtn.onclick = () => { destroy(); $url.value = ''; log('idle…'); };
     </script>
   </body>
 </html>

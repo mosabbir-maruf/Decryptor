@@ -12,7 +12,7 @@ npm install
 npm start          # or: npm run dev (with --watch). Default port 3030 (PORT overrides)
 ```
 
-Open the player at http://localhost:3030/ (supports `?url=<embed|m3u8>` auto-play).
+Open the player at http://localhost:3030/ (supports `?url=<embed|m3u8|tmdb-id>` auto-play).
 
 ## Deploy (Cloudflare Workers)
 
@@ -46,11 +46,11 @@ Set `PORT` to change the internal port (update the published port accordingly).
 
 ## Routes
 
-- `POST /api/extract` — body `{ "url": "<embed>" }` → `{ m3u8, referer, host, finalUrl, proxyUrl }`.
+- `POST /api/extract` — body `{ "url": "<embed|tmdb>" }` → `{ m3u8, referer, host, finalUrl, proxyUrl }`.
 - `GET /proxy?url=<enc target>&referer=<enc origin>` — fetches target with the
   player's origin as `Referer`, rewrites playlists back through `/proxy`, streams
   segments through. **Required** for most hosts.
-- `GET /` `/player` — single hls.js player page (supports `?url=<embed|m3u8>` auto-play).
+- `GET /` `/player` — single hls.js player page (supports `?url=<embed|m3u8|tmdb-id>` auto-play).
 - `GET /health` — health check. `/<file>` — static asset (e.g. `/hls.min.js`).
 
 ## Supported hosts
@@ -61,9 +61,11 @@ Set `PORT` to change the internal port (update the published port accordingly).
 | SR5 | Turbo               | ✅    | ✅         |
 | SR7 | Lulustream          | ✅    | ✅         |
 | SR9 | Vidara              | ✅    | ✅         |
+|  —  | PRO Multi (TMDB)    | ✅    | ✅         |
 
 Vidhide works locally but is blocked on Cloudflare (its CDN rejects CF egress
-IPs). For all four on CF, deploy on a VPS/residential IP.
+IPs). For all four on CF, deploy on a VPS/residential IP. PRO Multi is sourced
+via vixsrc.to's API from a TMDB movie/TV URL (or plain TMDB id).
 
 Sample test embed URLs for these hosts are in [`samples.md`](./samples.md).
 
@@ -98,7 +100,8 @@ decrypt/
 │       ├── vidhide.js        # SR2 — wraps generic.js
 │       ├── lulustream.js     # SR7 — wraps generic.js
 │       ├── vidara.js         # SR9 — POST /api/stream
-│       └── generic.js        # Packed-JS extractor for Turbo (SR5)
+│       ├── generic.js        # Packed-JS extractor for Turbo (SR5)
+│       └── vixsrc.js         # PRO Multi — TMDB URL → vixsrc.to API
 └── tests/
     └── unit.test.js          # Unit tests (npm test)
 ```
@@ -114,6 +117,7 @@ decrypt/
   - `vidhide.js`, `lulustream.js` — thin wrappers delegating to `generic.js`.
   - `vidara.js` — `POST /api/stream`.
   - `generic.js` — packed-JS extractor for Turbo.
+  - `vixsrc.js` — PRO Multi extractor: TMDB movie/TV URL (or plain id) → vixsrc.to API.
 
 ## Conventions
 
