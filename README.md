@@ -1,18 +1,20 @@
 # Decryptor
 
-Node.js + Hono backend that turns **embed links** into playable
-`.m3u8` URLs and proxies the HLS (playlist + segments) through the server with
-the correct `Referer`/`Origin`. This defeats the domain/referer-locks that stop
-those streams playing directly in a browser.
+Node.js + Hono backend that turns **TMDB URLs** (movie/TV) and **embed links**
+into playable `.m3u8`/mp4 streams and proxies through the server with the
+required `Referer`/`Origin`, defeating domain/referer locks.
+
+Primary use-case: **nxsha** aggregator — paste a TMDB URL or numeric id, get a
+multi-server list (nitro/lolly/streamfx/multibill/…) with ready `/proxy` URLs.
 
 ## Run
 
 ```bash
 npm install
-npm start          # or: npm run dev (with --watch). Default port 3030 (PORT overrides)
+npm start          # or: npm run dev (--watch). Default port 3030 (PORT overrides)
 ```
 
-Open the player at http://localhost:3030/ (supports `?url=<embed|m3u8|tmdb-id>` auto-play).
+Open the player at http://localhost:3030/ (`?url=<tmdb|m3u8|numeric-id>` auto-play).
 
 ## Deploy (Cloudflare Workers)
 
@@ -21,9 +23,9 @@ npm i -D wrangler
 npm run deploy     # or: npm run dev:cf
 ```
 
-`wrangler.toml` serves `public/` as static **Assets** (`binding: ASSETS`);
-`index.js` serves them via that binding on Workers, falling back to `./public`
-on disk under Node. No `fs`/`__dirname` at module top level → runs on Workers.
+`wrangler.toml` serves `public/` as static **Assets** (`binding: ASSETS`).
+Workers plan has a **30s CPU time limit** — 60s proxy timeout applies to Node
+only; Workers enforces 30s.
 
 ## Deploy (Docker)
 
@@ -41,89 +43,92 @@ Or with Compose (respects a `PORT` env var, auto-restarts, healthchecked):
 PORT=3030 docker compose up -d --build
 ```
 
-The container listens on `3030` and exposes `GET /health` for the healthcheck.
-Set `PORT` to change the internal port (update the published port accordingly).
-
 ## Routes
 
-- `POST /api/extract` — body `{ "url": "<embed|tmdb>" }` → `{ m3u8, referer, host, finalUrl, proxyUrl }`.
-- `GET /proxy?url=<enc target>&referer=<enc origin>` — fetches target with the
-  player's origin as `Referer`, rewrites playlists back through `/proxy`, streams
-  segments through. **Required** for most hosts.
-- `GET /` `/player` — single hls.js player page (supports `?url=<embed|m3u8|tmdb-id>` auto-play).
-- `GET /health` — health check. `/<file>` — static asset (e.g. `/hls.min.js`).
+- `POST /api/extract` — `{ "url": "<tmdb|embed|numeric-id>" }` →
+  `{ url, referer, type, proxyUrl, servers? }`. For TMDB/numeric input nxsha
+  returns a `servers[]` list with `{ name, type, quality, proxyUrl }` each.
+- `GET /proxy?url=<enc target>&referer=<enc origin>&headers=<enc>` — fetches
+  target with the player's origin as `Referer`, rewrites playlists back through
+  `/proxy`, streams segments. `headers` carries an allowlisted set of extra
+  headers (origin, accept-language, user-agent, …).
+- `GET /` `/player` — hls.js player page (`?url=<embed|m3u8|tmdb>` auto-play).
+- `GET /health` — health check. `/<file>` — static asset (cached: `.html` 5min,
+  `.js`/`.css` 1d).
 
 ## Supported hosts
 
-| SR  | Host                | Local | Cloudflare |
-|-----|---------------------|-------|------------|
-| SR2 | Vidhide             | ✅    | ❌ (403)    |
-| SR5 | Turbo               | ✅    | ✅         |
-| SR7 | Lulustream          | ✅    | ✅         |
-| SR9 | Vidara              | ✅    | ✅         |
-|  —  | PRO Multi (TMDB)    | ✅    | ✅         |
+| Type | Source | Input | Status |
+|------|--------|-------|--------|
+| Primary | **Nxsha** (multi-server) | TMDB URL or numeric id | ✅ returns 14+ servers (nitro, lolly, streamfx, multibill, …) |
+| Manual | **Screenscape workers.dev** | `*.workers.dev/?url=...` stream URL | ✅ unwraps and re-proxies |
+| Fallback | **PRO Multi** (vixsrc) | TMDB URL | ✅ single-source fallback if nxsha fails |
+| Legacy | **Vidhide** (SR2) | Embed URL | ✅ local only (CF 403) |
+| Legacy | **Turbo** (SR5) | Embed URL | ✅ local + CF |
+| Legacy | **Lulustream** (SR7) | Embed URL | ✅ local + CF |
+| Legacy | **Vidara** (SR9) | Embed URL | ✅ local + CF |
 
-Vidhide works locally but is blocked on Cloudflare (its CDN rejects CF egress
-IPs). For all four on CF, deploy on a VPS/residential IP. PRO Multi is sourced
-via vixsrc.to's API from a TMDB movie/TV URL (or plain TMDB id).
+Nxsha is the primary path: paste any TMDB movie/TV URL (or just the numeric id)
+and get a server switcher. Legacy embed hosts (vidhide, turbo, lulustream,
+vidara) still work if you paste their embed URLs directly.
 
-Sample test embed URLs for these hosts are in [`samples.md`](./samples.md).
+Sample test embeddings are in [`samples.md`](./samples.md).
 
 ## Proxy behavior
 
-- Streams segments via `res.body` (no buffering) for low latency.
-- Playlist detection is URL/content-type based and never reads the body.
-- Forwards `Content-Range` when the origin answers `206`.
-- Drops `Referer`/`Origin` for `*.googleusercontent.com` / `googleapis.com`.
-- Strips a fake PNG prefix for those (Turbo) hosts: they prepend a real PNG
-  before the MPEG-TS; `stripFakePrefix()` finds the first TS sync byte and
-  serves clean `video/mp2t`.
+- **Streams segments** via `res.body` (no buffering) for low latency.
+- **Playlist detection** is URL/content-type based (`isPlaylistTarget`); body
+  is only read for confirmed playlists (to rewrite URLs) and for de-prefix.
+- **60s timeout**: each `/proxy` request is aborted after 60s (prevents hanging
+  on dead upstreams). On Workers the platform enforces 30s.
+- **Forwards `Content-Range`** on `206` (browsers reject a 206 without it).
+- **Drops `Referer`/`Origin`** for `*.googleusercontent.com` / `googleapis.com`.
+- **Strips fake PNG prefix** for Turbo: `stripFakePrefix()` finds the first
+  `0x47` TS-sync at 188-byte spacing and serves clean `video/mp2t`.
+- **Extra headers**: `/proxy?headers=<enc>` forwards an allowlisted set
+  (`origin`/`accept-language`/`user-agent`/`accept`/`referer`/`sec-fetch-*`).
+  Blocked: `Host`/`Content-Length`/`Connection`.
+- **Playlist caching**: `cache-control: public, max-age=30`. Static assets:
+  `.html` 5min, `.js`/`.css` 1d.
 
 ## File structure
 
 ```
 decrypt/
-├── index.js                  # Hono app + Workers/Node server bootstrap + static serving
+├── index.js                  # Hono app + Workers/Node bootstrap + static serving
 ├── wrangler.toml             # Cloudflare Workers config (ASSETS binding → public/)
 ├── package.json
-├── package-lock.json
-├── samples.md                # Sample embed links (live-check notes)
+├── Dockerfile
+├── docker-compose.yml
+├── AGENTS.md                 # Agent instructions
+├── MEMORY.md                 # Runtime findings
+├── samples.md                # Sample embed links
 ├── public/
 │   ├── player.html           # hls.js player page (served at / and /player)
 │   └── hls.min.js            # Vendored hls.js (no external CDN)
 ├── src/
-│   ├── http.js               # Shared fetch helpers (UA, referer)
-│   ├── unpack.js             # Dean-edwards packer unpacker + .m3u8 finder
-│   ├── proxy.js              # Proxy core (rewrite, fetchThrough, stripFakePrefix)
+│   ├── util.js               # Shared base64url helpers
+│   ├── http.js               # UA, fetchText, originOf
+│   ├── proxy.js              # Proxy core (encodeProxyUrl, fetchThrough, rewritePlaylist, …)
+│   ├── unpack.js             # Dean-edwards packer unpacker + .m3u8 finder (legacy)
 │   └── extractors/
 │       ├── index.js          # Dispatcher (host → extractor)
+│       ├── nxsha.js          # Primary: TMDB URL/numeric id → multi-server list
+│       ├── workers.js        # Screenscape *.workers.dev unwrapper
+│       ├── vixsrc.js         # PRO Multi fallback
 │       ├── vidhide.js        # SR2 — wraps generic.js
 │       ├── lulustream.js     # SR7 — wraps generic.js
 │       ├── vidara.js         # SR9 — POST /api/stream
-│       ├── generic.js        # Packed-JS extractor for Turbo (SR5)
-│       └── vixsrc.js         # PRO Multi — TMDB URL → vixsrc.to API
+│       └── generic.js        # Packed-JS extractor (Turbo SR5)
 └── tests/
     └── unit.test.js          # Unit tests (npm test)
 ```
 
-## Layout
-
-- `index.js` — Hono app + Workers/Node server bootstrap + static serving.
-- `src/unpack.js` — dean-edwards packer unpacker + `.m3u8` finder.
-- `src/http.js` — shared fetch helpers (UA, referer).
-- `src/proxy.js` — proxy core: `encodeProxyUrl`, `isPlaylistTarget`,
-  `rewritePlaylist`, `fetchThrough`, `needsDeprefix`, `stripFakePrefix`.
-- `src/extractors/` — one module per host + `index.js` dispatcher.
-  - `vidhide.js`, `lulustream.js` — thin wrappers delegating to `generic.js`.
-  - `vidara.js` — `POST /api/stream`.
-  - `generic.js` — packed-JS extractor for Turbo.
-  - `vixsrc.js` — PRO Multi extractor: TMDB movie/TV URL (or plain id) → vixsrc.to API.
-
 ## Conventions
 
-- ESM only, no build step. Deps: `hono` + `@hono/node-server`. No secrets.
-- Don't modify other projects from here.
-- Never commit/push unless asked.
+- ESM only, no build step. Deps: `hono` + `@hono/node-server` + `crypto-js`.
+  No secrets in code.
+- Don't modify other projects from here. Never commit/push unless asked.
 
 ## Test
 

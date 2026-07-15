@@ -33,6 +33,8 @@
       <div class="hint">
         Paste a direct <code>.m3u8</code> (or our <code>/proxy?...</code>) URL, or an
         embed/TMDB URL (vidhideplus / turbovidhls / lulustream / vidara / themoviedb.org).
+        A TMDB movie/TV URL returns Nxsha's multi-server list (use the Server dropdown).
+        For TV, set <b>Media = TV</b> and the <b>Season</b>/<b>Episode</b> before loading.
       </div>
     </header>
     <main>
@@ -41,11 +43,21 @@
         <button id="play">Load &amp; Play</button>
         <button id="clear" class="sec">Clear</button>
       </div>
+      <div class="row" style="margin-top:.6rem">
+        <select id="media" title="Media type">
+          <option value="auto">Auto</option>
+          <option value="movie">Movie</option>
+          <option value="tv">TV</option>
+        </select>
+        <input id="season" type="number" min="1" placeholder="Season" style="flex:0 0 100px" />
+        <input id="episode" type="number" min="1" placeholder="Episode" style="flex:0 0 100px" />
+      </div>
       <div class="vwrap">
         <video id="video" controls></video>
         <div id="overlay" class="overlay hidden">Click to play</div>
       </div>
       <div class="ctrls">
+        <label id="serverWrap" style="display:none">Server <select id="server"></select></label>
         <label>Quality <select id="quality"><option value="-1">Auto</option></select></label>
         <label>Audio <select id="audio"><option value="-1">Default</option></select></label>
         <label>Subtitles <select id="subs"><option value="-1">Off</option></select></label>
@@ -57,10 +69,12 @@
       const $ = (id) => document.getElementById(id);
       const $log = $('log'), $url = $('url'), $playBtn = $('play'), $clearBtn = $('clear');
       const $quality = $('quality'), $subs = $('subs'), $audio = $('audio');
+      const $server = $('server'), $serverWrap = $('serverWrap');
+      const $media = $('media'), $season = $('season'), $episode = $('episode');
       const log = (m) => { console.log('[player]', m); $log.textContent += '\n' + String(m); };
       const video = $('video');
       const overlay = $('overlay');
-      const isEmbed = /vidhideplus|callistanise|lulustream|luluvdo|vidara|turbovidhls|themoviedb\.org/;
+      const isEmbed = /vidhideplus|callistanise|lulustream|luluvdo|vidara|turbovidhls|themoviedb\.org|nxsha\.app/;
       let hls = null;
 
       function showOverlay(msg) {
@@ -83,6 +97,8 @@
         $quality.innerHTML = '<option value="-1">Auto</option>';
         $audio.innerHTML = '<option value="-1">Default</option>';
         $subs.innerHTML = '<option value="-1">Off</option>';
+        // Keep the server switcher visible — it persists across play() calls so
+        // the user can switch servers without losing the dropdown.
       }
 
       // Build the Quality / Audio / Subtitle <select>s from the parsed manifest.
@@ -112,56 +128,76 @@
       $audio.onchange = () => { if (hls) hls.audioTrack = parseInt($audio.value, 10); };
       $subs.onchange = () => { if (hls) { hls.subtitleTrack = parseInt($subs.value, 10); hls.subtitleDisplay = $subs.value !== '-1'; } };
 
-      function play(src) {
-        destroy();
-        if (!window.Hls) {
-          log('ERROR: hls.min.js failed to load (check /hls.min.js is served).');
-          return;
-        }
-        log('hls.js v' + (Hls.version || '?'));
-        const onReady = () => {
-          log('manifest ready — starting playback (muted)…');
-          video.muted = true; // muted autoplay is usually allowed
-          video.play().catch((e) => {
-            showOverlay('Click to play');
-            log('playback blocked (' + e.name + '): click the video');
-          });
-        };
+      function nativePlay(src) {
+        log('playing native source…');
+        video.src = src;
+        video.addEventListener('loadedmetadata', () => {
+          video.muted = true;
+          video.play().catch(() => showOverlay('Click to play'));
+        }, { once: true });
+      }
 
+      function play(src, type) {
+        destroy();
+        // mp4/mkv (and any non-HLS) should go straight to the native player —
+        // hls.js only handles HLS, and pushing an mp4 through it can fail
+        // mid-parse without hitting the clean fallback path.
+        if (type === 'mp4' || !window.Hls) { nativePlay(src); return; }
+
+        // Prefer hls.js: it plays real m3u8 and also HLS playlists that some
+        // providers mislabel as "mp4". If hls.js fatally can't parse the source
+        // (genuine direct mp4), we fall back to the native <video> element.
         if (Hls.isSupported()) {
-            hls = new Hls({
-              enableWorker: false,
-              maxBufferLength: 30,
-              maxMaxBufferLength: 60,
-              backBufferLength: 15,
-              startLevel: 0,
+          log('hls.js v' + (Hls.version || '?'));
+          const onReady = () => {
+            log('manifest ready — starting playback (muted)…');
+            video.muted = true; // muted autoplay is usually allowed
+            video.play().catch((e) => {
+              showOverlay('Click to play');
+              log('playback blocked (' + e.name + '): click the video');
             });
-            hls.on(Hls.Events.MANIFEST_PARSED, (_ev, data) => {
-              log('manifest parsed (' + (data.levels?.length || 0) + ' levels, ' + (data.audioTracks?.length || 0) + ' audio)');
-              populateControls(data);
-              const eng = data.audioTracks?.findIndex(t => (t.lang || '').startsWith('eng') || (t.name || '').includes('English'));
-              if (eng >= 0) {
-                setTimeout(() => {
-                  hls.audioTrack = eng;
-                  $audio.value = String(eng);
-                }, 100);
-              }
-              onReady();
-            });
-            hls.on(Hls.Events.ERROR, (_e, d) => {
-              const msg = d.type + ' / ' + d.details + (d.response ? ' (HTTP ' + d.response.code + ')' : '');
-              if (d.fatal) { log('FATAL: ' + msg); }
-              else log('warn: ' + msg);
-            });
-            hls.on(Hls.Events.LEVEL_SWITCHED, (_ev, d) => {
-              $quality.value = String(hls.autoLevelEnabled ? -1 : d.level);
-            });
-            hls.attachMedia(video);
-            hls.loadSource(src);
+          };
+
+          hls = new Hls({
+            enableWorker: false,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+            backBufferLength: 15,
+            startLevel: 0,
+          });
+          hls.on(Hls.Events.MANIFEST_PARSED, (_ev, data) => {
+            log('manifest parsed (' + (data.levels?.length || 0) + ' levels, ' + (data.audioTracks?.length || 0) + ' audio)');
+            populateControls(data);
+            const eng = data.audioTracks?.findIndex(t => (t.lang || '').startsWith('eng') || (t.name || '').includes('English'));
+            if (eng >= 0) {
+              setTimeout(() => {
+                hls.audioTrack = eng;
+                $audio.value = String(eng);
+              }, 100);
+            }
+            onReady();
+          });
+          hls.on(Hls.Events.ERROR, (_e, d) => {
+            const msg = d.type + ' / ' + d.details + (d.response ? ' (HTTP ' + d.response.code + ')' : '');
+            // Non-HLS source (e.g. direct mp4) mislabeled as HLS: fall back.
+            if (d.fatal && (d.details === 'manifestParsingError' || d.details === 'networkError')) {
+              log('hls.js could not play (' + d.details + ') — falling back to native');
+              try { hls.destroy(); } catch { /* noop */ }
+              hls = null;
+              nativePlay(src);
+              return;
+            }
+            if (d.fatal) { log('FATAL: ' + msg); }
+            else log('warn: ' + msg);
+          });
+          hls.on(Hls.Events.LEVEL_SWITCHED, (_ev, d) => {
+            $quality.value = String(hls.autoLevelEnabled ? -1 : d.level);
+          });
+          hls.attachMedia(video);
+          hls.loadSource(src);
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           log('falling back to native HLS (Safari/iOS)');
-          video.src = src;
-          video.addEventListener('loadedmetadata', onReady, { once: true });
+          nativePlay(src);
         } else {
           log('HLS not supported in this browser');
         }
@@ -172,15 +208,33 @@
         if (!raw) return;
         $url.value = raw;
         $log.textContent = '';
+        // Reset the server switcher; it's re-shown only for multi-server results.
+        $serverWrap.style.display = 'none';
+        $server.innerHTML = '';
+        $server.onchange = null;
         log('resolving ' + raw);
         try {
-          // Plain numeric ID → treat as TMDB movie
-          if (/^\d+$/.test(raw)) {
-            raw = 'https://www.themoviedb.org/movie/' + raw;
-            $url.value = raw;
+          // Build a TMDB URL from a numeric id or themoviedb URL, honoring the
+          // Media / Season / Episode controls so TV episodes are selectable.
+          if (/^\d+$/.test(raw) || /themoviedb\.org/.test(raw)) {
+            const id = /^\d+$/.test(raw) ? raw : (raw.match(/themoviedb\.org\/(?:movie|tv)\/(\d+)/) || [])[1];
+            if (id) {
+              const forceTv = $media.value === 'tv';
+              const forceMovie = $media.value === 'movie';
+              const isTv = forceTv || (!forceMovie && /themoviedb\.org\/tv\//.test(raw));
+              if (isTv) {
+                const s = $season.value.trim() || (raw.match(/season\/(\d+)/) || [])[1] || '1';
+                const e = $episode.value.trim() || (raw.match(/episode\/(\d+)/) || [])[1] || '1';
+                raw = `https://www.themoviedb.org/tv/${id}/season/${s}/episode/${e}`;
+              } else {
+                raw = `https://www.themoviedb.org/movie/${id}`;
+              }
+              $url.value = raw;
+            }
           }
           const embed = isEmbed.test(raw);
           let src = raw;
+          let type;
           if (embed) {
             const res = await fetch('/api/extract', {
               method: 'POST', headers: { 'content-type': 'application/json' },
@@ -188,12 +242,26 @@
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'extract failed');
+            // Multi-server extractors (nxsha) expose a server switcher.
+            if (Array.isArray(data.servers) && data.servers.length) {
+              $server.innerHTML = data.servers
+                .map((s, i) => `<option value="${i}">${s.name || s.scraper}${s.quality ? ' — ' + s.quality : ''}</option>`)
+                .join('');
+              $serverWrap.style.display = '';
+              $server.onchange = () => {
+                const s = data.servers[parseInt($server.value, 10)];
+                play(s.proxyUrl, s.type);
+              };
+              log('extracted ' + data.servers.length + ' servers');
+            } else {
+              log('extracted → ' + data.proxyUrl);
+            }
             src = data.proxyUrl;
-            log('extracted → ' + src);
+            type = data.type;
           } else {
             log('loading m3u8 directly → ' + src);
           }
-          play(src);
+          play(src, type);
         } catch (err) {
           log('error: ' + err.message);
         }
@@ -203,7 +271,17 @@
 
       // Auto-play if ?url=<embed or m3u8/proxy> is present (one-click links).
       const initial = new URLSearchParams(location.search).get('url');
-      if (initial) load(initial);
+      if (initial) {
+        if (/themoviedb\.org\/tv\//.test(initial)) {
+          $media.value = 'tv';
+          const sm = initial.match(/season\/(\d+)/), em = initial.match(/episode\/(\d+)/);
+          if (sm) $season.value = sm[1];
+          if (em) $episode.value = em[1];
+        } else if (/themoviedb\.org\/movie\//.test(initial)) {
+          $media.value = 'movie';
+        }
+        load(initial);
+      }
 
       $clearBtn.onclick = () => { destroy(); $url.value = ''; log('idle…'); };
     </script>
